@@ -1,0 +1,59 @@
+on:
+  push:
+    branches:
+      - dev
+
+env:
+  BRANCH: dev
+  DEPLOY_NAMESPACE: dev
+
+jobs:
+
+  build:
+    name: Deploy imager to k8s cluster DEV
+    runs-on: self-hosted
+    steps:
+
+      - name: Checkout main
+        uses: actions/checkout@v2
+        with:
+          ref: ${{ env.BRANCH }}
+
+      - name: Update SHA
+        run: echo $GITHUB_SHA > $GITHUB_WORKSPACE/.github-sha
+
+      - name: Build container image
+        run: docker build -t registry.digitalocean.com/[REPLACE-WITH-PROJECTNAME]/imager-${{env.DEPLOY_NAMESPACE}}:$(echo $GITHUB_SHA | head -c7) .
+
+      - name: Install doctl
+        uses: digitalocean/action-doctl@v2
+        with:
+          token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+
+      - name: Log in to DigitalOcean Container Registry with short-lived credentials
+        run: doctl registry login --expiry-seconds 600
+
+      - name: Push image to DigitalOcean Container Registry
+        run: docker push registry.digitalocean.com/[REPLACE-WITH-PROJECTNAME]/imager-${{env.DEPLOY_NAMESPACE}}:$(echo $GITHUB_SHA | head -c7)
+
+      - name: Update deployment file
+        run: TAG=$(echo $GITHUB_SHA | head -c7) && sed -i 's|<IMAGE>|registry.digitalocean.com/[REPLACE-WITH-PROJECTNAME]/imager-${{env.DEPLOY_NAMESPACE}}:'${TAG}'|' $GITHUB_WORKSPACE/k8s/${{env.DEPLOY_NAMESPACE}}.yaml
+
+      - name: Save DigitalOcean kubeconfig with short-lived credentials
+        run: doctl kubernetes cluster kubeconfig save --expiry-seconds 600 [REPLACE-WITH-CLUSTERNAME]
+
+      - name: Deploy to DigitalOcean Kubernetes
+        run: kubectl apply -f $GITHUB_WORKSPACE/k8s/${{env.DEPLOY_NAMESPACE}}.yaml
+
+      - name: Verify deployment
+        run: kubectl rollout status  --namespace=${{env.DEPLOY_NAMESPACE}} deployment/imager
+
+      - name: send message to telegram
+        uses: appleboy/telegram-action@master
+        with:
+          to: ${{ secrets.TELEGRAM_SYSTEM_CHATID }}
+          token: ${{ secrets.TELEGRAM_SYSTEM_TOKEN }}
+          message: |
+            Deploy ${{ github.ref }} ${{ github.event.head_commit.url }}
+            To [REPLACE-WITH-PROJECTNAME]:${{env.DEPLOY_NAMESPACE}}
+            Commit: ${{ github.event.head_commit.message }}
